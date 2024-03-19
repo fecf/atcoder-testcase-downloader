@@ -16,12 +16,12 @@ const testCases = testCasesTableRows.map(_ => ({ fileName: _.querySelector(".tex
 const msg = document.createElement("span");
 testCasesTableHeader.append(document.createElement("br"));
 testCasesTableHeader.append(msg);
-msg.innerText = "Downloading ...";
+msg.innerText = "Loading ...";
 
 chrome.runtime.sendMessage({ type: "prefetch", data: { contest, problem } }, async (response) => {
   if (response.type === "prefetch") {
     if (response.status !== 0) {
-      msg.innerText = `Failed to download. (${response.status})`;
+      msg.innerText = `Failed. (${response.status})`;
       return;
     }
 
@@ -59,6 +59,6 @@ chrome.runtime.sendMessage({ type: "prefetch", data: { contest, problem } }, asy
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "progress") {
-      msg.innerText = "Downloading ... " + response.data;
+      msg.innerText = request.data;
     }
 });

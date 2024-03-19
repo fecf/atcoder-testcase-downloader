@@ -16,12 +16,13 @@ const createURLSearchParams = (data) => {
     return params;
 };
 
-const listSharedLinkFolderEntries = async (linkKey, secureHash, subPath, maxPages) => {
+const listSharedLinkFolderEntries = async (linkKey, secureHash, subPath, maxPages, progressCallback) => {
     let shareTokens = [];
     let totalNumEntries = 0;
     let voucher = null;
     let pageCount = 0;
     while (pageCount < maxPages) {
+        await progressCallback(`Loading entries ... (${linkKey}/${secureHash}${subPath} page ${pageCount + 1})`)
         const params = {
             "is_xhr": true,
             "link_key": linkKey,
@@ -73,6 +74,13 @@ const fetchUserContentLink = async (linkKey, secureHash, subPath) => {
     return text;
 };
 
+const progressCallback = async (msg) => {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tab) {
+        await chrome.tabs.sendMessage(tab.id, { type: "progress", data: msg });
+    }
+};
+
 const prefetchTestCases = async (contest, problem) => {
     const testCasesCacheKey = `cache.${contest}.${problem}`;
     const cache = await chrome.storage.local.get(["shareTokens", "totalNumEntries", testCasesCacheKey]);
@@ -87,7 +95,7 @@ const prefetchTestCases = async (contest, problem) => {
     let contests = cache.shareTokens;
     if (contests) {
         // エントリ数が変わってたら全コンテスト情報を再取得
-        const temp = await listSharedLinkFolderEntries(RootLinkKey, RootSecureHash, "", 1);
+        const temp = await listSharedLinkFolderEntries(RootLinkKey, RootSecureHash, "", 1, progressCallback);
         if (temp.totalNumEntries !== cache.totalNumEntries) {
             fetchAllContests = true;
         }
@@ -95,17 +103,38 @@ const prefetchTestCases = async (contest, problem) => {
         fetchAllContests = true;
     }
     if (fetchAllContests) {
-        const temp = await listSharedLinkFolderEntries(RootLinkKey, RootSecureHash, "", MaxPageCount);
+        const temp = await listSharedLinkFolderEntries(RootLinkKey, RootSecureHash, "", MaxPageCount, progressCallback);
         contests = temp.shareTokens;
         await chrome.storage.local.set({"shareTokens": temp.shareTokens, "totalNumEntries": temp.totalNumEntries});
     }
 
     // テストケースをダウンロード
     const contestToken = contests.filter(_ => _.subPath.toLowerCase() === `/${contest}`.toLowerCase())[0];
-    const problems = await listSharedLinkFolderEntries(contestToken.linkKey, contestToken.secureHash, contestToken.subPath, MaxPageCount);
+    const problems = await listSharedLinkFolderEntries(contestToken.linkKey, contestToken.secureHash, contestToken.subPath, MaxPageCount, progressCallback);
     const problemToken = problems.shareTokens.filter(_ => _.subPath.toLowerCase() === `/${contest}/${problem}`.toLowerCase())[0];
+
     const testCasesLink = await fetchUserContentLink(problemToken.linkKey, problemToken.secureHash, problemToken.subPath);
-    const testCasesZip = await JSZip.loadAsync(await (await fetch(testCasesLink)).blob());
+    const testCasesLinkFetchResponse = await fetch(testCasesLink);
+    const reader = testCasesLinkFetchResponse.body.getReader();
+    const total = testCasesLinkFetchResponse.headers.get('Content-Length');
+    let received = 0;
+    let chunks = [];
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        await progressCallback(`Loading test cases ... (${received} / ${total} bytes)`);
+    }
+    let data = new Uint8Array(received);
+    let position = 0;
+    for (let chunk of chunks) {
+        data.set(chunk, position);
+        position += chunk.length;
+    }
+
+    // 解凍
+    const testCasesZip = await JSZip.loadAsync(data);
     const testCases = [];
     await Promise.all(
         Object.entries(testCasesZip.files).map(async ([path, zip]) => {
