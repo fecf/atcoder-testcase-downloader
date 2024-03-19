@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "AtCoder Testcase Downloader",
+  "description": "AtCoder Testcase Downloader",
+  "version": "1.0",
+  "action": { "default_popup": "popup/popup.html" },
+  "background": {
+    "service_worker": "/scripts/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "js": ["scripts/content.js"],
+      "matches": ["https://atcoder.jp/*"]
+    }
+  ],
+  "permissions": ["cookies", "storage", "unlimitedStorage"],
+  "host_permissions": [
+    "https://www.dropbox.com/"
+  ]
+}
