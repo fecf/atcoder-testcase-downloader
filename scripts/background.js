@@ -16,7 +16,16 @@ const createURLSearchParams = (data) => {
     return params;
 };
 
-const listSharedLinkFolderEntries = async (linkKey, secureHash, subPath, maxPages, progressCallback) => {
+const listSharedLinkFolderEntries = async (linkKey, secureHash, subPath, maxPages, progressCallback, ignoreReadCache, ignoreWriteCache) => {
+    const cacheKey = `entriesCache.${linkKey}.${secureHash}.${subPath}`;
+    if (!ignoreReadCache) {
+        const cache = await chrome.storage.local.get([cacheKey]);
+        if (cache[cacheKey]) {
+            console.log(`Loaded entries from cache: ${linkKey}/${secureHash}/${subPath}`);
+            return cache[cacheKey];
+        }
+    }
+
     let shareTokens = [];
     let totalNumEntries = 0;
     let voucher = null;
@@ -51,6 +60,10 @@ const listSharedLinkFolderEntries = async (linkKey, secureHash, subPath, maxPage
         voucher = JSON.parse(json.next_request_voucher);
         pageCount++;
     }
+
+    if (!ignoreWriteCache) {
+        await chrome.storage.local.set({ [`${cacheKey}`]: { shareTokens, totalNumEntries } });
+    }
     return { shareTokens, totalNumEntries };
 };
 
@@ -81,42 +94,31 @@ const progressCallback = async (msg) => {
     }
 };
 
-const prefetchTestCases = async (contest, problem) => {
-    const testCasesCacheKey = `cache.${contest}.${problem}`;
-    const cache = await chrome.storage.local.get(["shareTokens", "totalNumEntries", testCasesCacheKey]);
-
-    // 指定されたテストケースはキャッシュ済み
-    if (cache[testCasesCacheKey]) {
-        console.log(`found test case in cache. ${contest}/${problem}`);
+const downloadTestCase = async (contest, problem, type, fileName) => {
+    const cacheKey = `cache.${contest}.${problem}.${type}.${fileName}`;
+    const cache = await chrome.storage.local.get([cacheKey]);
+    if (cache[cacheKey]) {
+        console.log(`found test case in cache. ${contest}/${problem}/${type}/${fileName}`);
         return;
     }
 
-    let fetchAllContests = false;
-    let contests = cache.shareTokens;
-    if (contests) {
-        // エントリ数が変わってたら全コンテスト情報を再取得
-        const temp = await listSharedLinkFolderEntries(RootLinkKey, RootSecureHash, "", 1, progressCallback);
-        if (temp.totalNumEntries !== cache.totalNumEntries) {
-            fetchAllContests = true;
-        }
-    } else {
-        fetchAllContests = true;
-    }
-    if (fetchAllContests) {
-        const temp = await listSharedLinkFolderEntries(RootLinkKey, RootSecureHash, "", MaxPageCount, progressCallback);
-        contests = temp.shareTokens;
-        await chrome.storage.local.set({"shareTokens": temp.shareTokens, "totalNumEntries": temp.totalNumEntries});
-    }
+    const contests = await listSharedLinkFolderEntries(RootLinkKey, RootSecureHash, "", MaxPageCount, progressCallback);
+    const contestToken = contests.shareTokens.filter(_ => _.subPath.toLowerCase() === `/${contest}`.toLowerCase())[0];
 
-    // テストケースをダウンロード
-    const contestToken = contests.filter(_ => _.subPath.toLowerCase() === `/${contest}`.toLowerCase())[0];
     const problems = await listSharedLinkFolderEntries(contestToken.linkKey, contestToken.secureHash, contestToken.subPath, MaxPageCount, progressCallback);
     const problemToken = problems.shareTokens.filter(_ => _.subPath.toLowerCase() === `/${contest}/${problem}`.toLowerCase())[0];
 
-    const testCasesLink = await fetchUserContentLink(problemToken.linkKey, problemToken.secureHash, problemToken.subPath);
-    const testCasesLinkFetchResponse = await fetch(testCasesLink);
-    const reader = testCasesLinkFetchResponse.body.getReader();
-    const total = testCasesLinkFetchResponse.headers.get('Content-Length');
+    const types = await listSharedLinkFolderEntries(problemToken.linkKey, problemToken.secureHash, problemToken.subPath, MaxPageCount, progressCallback);
+    const typeToken = types.shareTokens.filter(_ => _.subPath.toLowerCase() === `/${contest}/${problem}/${type}`.toLowerCase())[0];
+
+    const testCases = await listSharedLinkFolderEntries(typeToken.linkKey, typeToken.secureHash, typeToken.subPath, MaxPageCount, progressCallback);
+    const testCaseToken = testCases.shareTokens.filter(_ => _.subPath.toLowerCase() === `/${contest}/${problem}/${type}/${fileName}`.toLowerCase())[0];
+
+    const testCaseLink = await fetchUserContentLink(testCaseToken.linkKey, testCaseToken.secureHash, testCaseToken.subPath);
+    const testCaseLinkFetchResponse = await fetch(testCaseLink);
+
+    const reader = testCaseLinkFetchResponse.body.getReader();
+    const total = testCaseLinkFetchResponse.headers.get('Content-Length');
     let received = 0;
     let chunks = [];
     while (true) {
@@ -132,27 +134,32 @@ const prefetchTestCases = async (contest, problem) => {
         data.set(chunk, position);
         position += chunk.length;
     }
+    const decoded = (new TextDecoder("utf-8")).decode(data);
+    chrome.storage.local.set({ [`${cacheKey}`]: decoded });
+    return { content: decoded, fileName };
+};
 
-    // 解凍
-    const testCasesZip = await JSZip.loadAsync(data);
-    const testCases = [];
-    await Promise.all(
-        Object.entries(testCasesZip.files).map(async ([path, zip]) => {
-            if (!zip.dir) {
-                const content = await zip.async('text');
-                testCases.push({ path, content });
-            }
-        })
-    );
-    chrome.storage.local.set({ [`${testCasesCacheKey}`]: testCases });
+const prefetchContests = async (contest) => {
+    const cache = await chrome.storage.local.get(["lastTotalNumEntries"]);
+    const temp = await listSharedLinkFolderEntries(RootLinkKey, RootSecureHash, "", 1, progressCallback, true, true);
+    if (!cache.lastTotalNumEntries || cache.lastTotalNumEntries !== temp.totalNumEntries) {
+        await listSharedLinkFolderEntries(RootLinkKey, RootSecureHash, "", MaxPageCount, progressCallback, true, false);
+        await chrome.storage.local.set({"lastTotalNumEntries": temp.totalNumEntries});
+    }
 };
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "prefetch") {
         setupCookie()
-        .then(() => prefetchTestCases(request.data.contest, request.data.problem))
-        .then(() => sendResponse({ type: "prefetch", status: 0, }))
-        .catch((e) => sendResponse({ type: "prefetch", status: e.message, }));
+        .then(() => prefetchContests(request.data.contest))
+        .then(() => sendResponse({ type: "prefetch" }))
+        .catch((e) => sendResponse({ type: "progress", data: e.message, }));
+        return true;
+    } else if (request.type === "download") {
+        setupCookie()
+        .then(() => downloadTestCase(request.data.contest, request.data.problem, request.data.type, request.data.fileName))
+        .then((data) => sendResponse({ type: "download", data }))
+        .catch((e) => sendResponse({ type: "progress", data: e.message, }));
         return true;
     }
 });
