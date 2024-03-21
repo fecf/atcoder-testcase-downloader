@@ -8,7 +8,8 @@ Dropboxからダウンロードする手間を省くことができます。
 
 [同様の拡張機能 (AtCoder TestCase Extension)](https://greasyfork.org/ja/scripts/371832-atcoder-testcase-extension) が手元の環境で動かなかったので作りました。
 
+※ABCの一部でしか動作確認していません。  
+※初回またはテストケース追加後はコンテスト一覧を全取得するため数秒待たされます。
+
 ![Untitled](https://github.com/fecf/atcoder-testcase-downloader/assets/6128431/58d7b2c1-0747-44b2-a015-4dde8c4dd0e8)
 
-ABCの一部でしか動作確認していません。  
-テストケースのサイズが大きい問題はダウンロードに時間がかかります。  
